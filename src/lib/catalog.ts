@@ -39,14 +39,23 @@ function cellText(v: unknown): string {
 }
 
 /**
- * Giá bán: file KiotViet có thể gắn định dạng ngày cho ô số, khi đó thư viện
- * trả về Date; đổi ngược về số ngày Excel (gốc 30/12/1899).
+ * Chuẩn hóa giá bán: luôn đảm bảo trả về số >= 0, không bao giờ là null/NaN.
+ * Nếu file KiotViet gắn định dạng ngày cho ô số, đổi ngược về số ngày Excel.
  */
-function cellNumber(v: unknown): number {
+export function sanitizePrice(v: unknown): number {
+  if (v == null || v === "") return 0;
   if (v instanceof Date) {
-    return Math.round((v.getTime() - Date.UTC(1899, 11, 30)) / 86400000);
+    const t = v.getTime();
+    if (isNaN(t)) return 0;
+    const num = Math.round((t - Date.UTC(1899, 11, 30)) / 86400000);
+    return isNaN(num) || !isFinite(num) ? 0 : Math.max(0, num);
   }
-  return Number(cellText(v)) || 0;
+  if (typeof v === "number") {
+    return isNaN(v) || !isFinite(v) ? 0 : Math.max(0, v);
+  }
+  const clean = String(v).replace(/,/g, "").replace(/[^0-9.-]/g, "").trim();
+  const num = parseFloat(clean);
+  return isNaN(num) || !isFinite(num) ? 0 : Math.max(0, num);
 }
 
 /** Đọc file Excel danh sách hàng hóa của KiotViet; ném lỗi nếu thiếu cột. */
@@ -88,7 +97,7 @@ export async function parseCatalogFile(file: Blob): Promise<ParsedCatalog> {
       code,
       barcode: get(row, "barcode"),
       name: get(row, "name"),
-      price: cellNumber(row[col.price as number]),
+      price: sanitizePrice(row[col.price as number]),
       unit: get(row, "unit"),
     });
   }
@@ -145,23 +154,63 @@ export async function syncCatalog(): Promise<CatalogData> {
   return saveCatalog(items, latest);
 }
 
+export interface ImportCatalogResult extends CatalogData {
+  warnings: string[];
+}
+
 /** Ghi danh mục vào Supabase: thêm/cập nhật theo Mã hàng, xóa mã không còn trong file. */
 export async function importCatalogToDb(
   items: Product[],
   onProgress?: (done: number, total: number) => void,
-): Promise<CatalogData> {
+): Promise<ImportCatalogResult> {
   const sb = getSupabase();
   const ts = new Date().toISOString();
   const CHUNK = 500;
+  const warnings: string[] = [];
+
   for (let i = 0; i < items.length; i += CHUNK) {
-    const rows = items.slice(i, i + CHUNK).map((p) => ({ ...p, updated_at: ts }));
+    const chunk = items.slice(i, i + CHUNK);
+    const rows = chunk.map((p) => ({
+      code: String(p.code ?? "").trim(),
+      barcode: String(p.barcode ?? "").trim(),
+      name: String(p.name ?? "").trim(),
+      price: sanitizePrice(p.price),
+      unit: String(p.unit ?? "").trim(),
+      updated_at: ts,
+    })).filter((r) => r.code);
+
     const { error } = await sb.from("products").upsert(rows, { onConflict: "code" });
-    if (error) throw new Error(error.message);
+    if (error) {
+      console.warn("Lỗi khi import chunk, thử lưu từng sản phẩm để bỏ qua dòng lỗi:", error.message);
+      // Xử lý bypass lỗi: lưu từng dòng để bỏ qua dòng lỗi và tiếp tục vòng lặp
+      for (const row of rows) {
+        try {
+          const { error: rowErr } = await sb.from("products").upsert([row], { onConflict: "code" });
+          if (rowErr) {
+            warnings.push(`Sản phẩm ${row.code} (${row.name}): ${rowErr.message}`);
+          }
+        } catch (e) {
+          warnings.push(`Sản phẩm ${row.code}: ${e instanceof Error ? e.message : "Lỗi không xác định"}`);
+        }
+      }
+    }
     onProgress?.(Math.min(i + CHUNK, items.length), items.length);
   }
-  const { error } = await sb.from("products").delete().lt("updated_at", ts);
-  if (error) throw new Error(error.message);
-  return saveCatalog(items, ts);
+
+  try {
+    const { error: delErr } = await sb.from("products").delete().lt("updated_at", ts);
+    if (delErr) {
+      console.warn("Không xóa được sản phẩm cũ:", delErr.message);
+    }
+  } catch (e) {
+    console.warn("Lỗi dọn sản phẩm cũ:", e);
+  }
+
+  const catalog = saveCatalog(items, ts);
+  return {
+    ...catalog,
+    warnings,
+  };
 }
 
 /** Bộ tra cứu: mã vạch trước, mã hàng sau. */

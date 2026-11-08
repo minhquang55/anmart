@@ -18,6 +18,7 @@ export default function CatalogPage() {
   });
   const [preview, setPreview] = useState<(ParsedCatalog & { fileName: string }) | null>(null);
   const [error, setError] = useState("");
+  const [warnings, setWarnings] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState("");
 
@@ -33,6 +34,7 @@ export default function CatalogPage() {
     e.target.value = "";
     if (!file) return;
     setError("");
+    setWarnings([]);
     setPreview(null);
     setBusy(true);
     setProgress("Đang đọc file...");
@@ -50,12 +52,16 @@ export default function CatalogPage() {
     if (!preview) return;
     setBusy(true);
     setError("");
+    setWarnings([]);
     try {
       const data = await importCatalogToDb(preview.items, (done, total) =>
         setProgress(`Đang lưu vào DB: ${formatNumber(done)}/${formatNumber(total)}`),
       );
       setInfo({ count: data.items.length, updatedAt: data.updatedAt });
       setPreview(null);
+      if (data.warnings.length) {
+        setWarnings(data.warnings);
+      }
     } catch (err) {
       setError(`Lưu vào DB thất bại: ${err instanceof Error ? err.message : "lỗi không rõ"}`);
     } finally {
@@ -91,6 +97,19 @@ export default function CatalogPage() {
       <input type="file" accept=".xlsx" onChange={onFile} disabled={busy} className="mb-4 block w-full text-sm" />
       {progress && <p className="text-sm">{progress}</p>}
       {error && <p className="text-sm text-danger">{error}</p>}
+      {warnings.length > 0 && (
+        <Card className="mb-4 border-amber-500/50 bg-amber-500/10 text-sm">
+          <p className="font-semibold text-amber-600 dark:text-amber-400">
+            Có {warnings.length} sản phẩm gặp lỗi và đã được bỏ qua hoặc tự gán giá 0:
+          </p>
+          <ul className="mt-2 max-h-40 list-disc space-y-1 overflow-y-auto pl-5 text-xs text-muted">
+            {warnings.slice(0, 50).map((w, idx) => (
+              <li key={idx}>{w}</li>
+            ))}
+            {warnings.length > 50 && <li>...và {warnings.length - 50} lỗi khác</li>}
+          </ul>
+        </Card>
+      )}
 
       {preview && (
         <Card className="text-sm">
