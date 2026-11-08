@@ -24,6 +24,7 @@ function beep() {
 interface Props {
   onDetect: (text: string) => void;
   onClose: () => void;
+  scanError?: string;
 }
 
 interface DeviceOption {
@@ -31,7 +32,7 @@ interface DeviceOption {
   label: string;
 }
 
-export default function BarcodeScanner({ onDetect, onClose }: Props) {
+export default function BarcodeScanner({ onDetect, onClose, scanError }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const onDetectRef = useRef(onDetect);
@@ -255,9 +256,9 @@ export default function BarcodeScanner({ onDetect, onClose }: Props) {
           </div>
         )}
 
-        {error && (
-          <div className="rounded-lg bg-danger/10 p-2 text-xs text-danger">
-            {error}
+        {(error || scanError) && (
+          <div className="rounded-lg border border-danger/30 bg-danger/10 p-2.5 text-xs font-medium text-danger animate-in fade-in duration-200">
+            ⚠️ {scanError || error}
           </div>
         )}
 

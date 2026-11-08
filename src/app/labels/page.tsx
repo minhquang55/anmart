@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import BarcodeScanner from "@/components/BarcodeScanner";
 import { Card, PageHeader } from "@/components/ui";
 import { buildIndex, loadCatalog, searchItems, syncCatalog, type Product } from "@/lib/catalog";
@@ -25,13 +25,15 @@ export default function LabelsPage() {
   const [activeId, setActiveId] = useState<string | null>(loadActiveId);
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
+  const [scanError, setScanError] = useState("");
   const [msg, setMsg] = useState<Msg>(null);
   const [query, setQuery] = useState("");
-  const [manual, setManual] = useState("");
+  const [selectedIndex, setSelectedIndex] = useState(-1);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   const index = useMemo(() => buildIndex(catalog.items), [catalog]);
   const active = lists.find((l) => l.id === activeId) ?? null;
-  const results = useMemo(() => searchItems(catalog.items, query), [catalog, query]);
+  const results = useMemo(() => searchItems(catalog.items, query, 10), [catalog, query]);
 
   // Tải danh mục và danh sách list từ DB khi mở trang.
   useEffect(() => {
@@ -49,6 +51,7 @@ export default function LabelsPage() {
   function switchList(id: string | null) {
     setActiveId(id);
     saveActiveId(id);
+    setMsg(null);
   }
 
   async function createList() {
@@ -56,7 +59,7 @@ export default function LabelsPage() {
     if (!name) return;
     try {
       const created = await createListDb(name);
-      setLists((ls) => [...ls, created]);
+      setLists((ls) => [created, ...ls]);
       switchList(created.id);
     } catch (e) {
       setMsg({ kind: "error", text: `Không tạo được list: ${(e as Error).message}` });
@@ -75,30 +78,52 @@ export default function LabelsPage() {
     }
   }
 
-  async function addProduct(p: Product) {
-    if (!active) return;
+  // Thêm sản phẩm vào đầu list
+  async function addProduct(p: Product): Promise<boolean> {
+    if (!active) return false;
     try {
       const ok = await addItemDb(active.id, p);
       if (!ok) {
-        setMsg({ kind: "error", text: `Bị trùng: ${p.name} (${p.code}) đã có trong list.` });
-        return;
+        setMsg({ kind: "error", text: `Bị trùng: "${p.name}" (${p.code}) đã có trong list.` });
+        return false;
       }
       setLists((ls) =>
-        ls.map((l) => (l.id === active.id ? { ...l, items: [...l.items, p] } : l)),
+        ls.map((l) =>
+          l.id === active.id
+            ? { ...l, items: [p, ...l.items.filter((i) => i.code !== p.code)] }
+            : l,
+        ),
       );
-      setMsg({ kind: "ok", text: `Đã thêm: ${p.name}` });
+      setMsg({ kind: "ok", text: `Đã thêm vào đầu list: ${p.name}` });
+      return true;
     } catch (e) {
       setMsg({ kind: "error", text: `Lỗi thêm sản phẩm: ${(e as Error).message}` });
+      return false;
     }
   }
 
-  function addByScan(raw: string) {
-    const p = index.find(raw);
+  // Xử lý khi camera quét được mã
+  async function handleDetectBarcode(rawCode: string) {
+    const code = rawCode.trim();
+    if (!code) return;
+
+    const p = index.find(code);
     if (!p) {
-      setMsg({ kind: "error", text: `Không tìm thấy mã "${raw}" trong danh mục.` });
+      // Quét thất bại: giữ nguyên popup và hiển thị thông báo
+      setScanError(`Không tìm thấy sản phẩm có mã "${code}" trong danh mục.`);
       return;
     }
-    void addProduct(p);
+
+    const ok = await addProduct(p);
+    if (!ok) {
+      // Sản phẩm đã có trong list: giữ popup và báo trùng
+      setScanError(`Sản phẩm "${p.name}" (${p.code}) đã có trong list.`);
+      return;
+    }
+
+    // Quét thành công: tắt popup
+    setScanError("");
+    setScanning(false);
   }
 
   async function removeItem(code: string) {
@@ -135,9 +160,9 @@ export default function LabelsPage() {
   }
 
   return (
-    <div className="mx-auto max-w-2xl">
-      <PageHeader title="Tem giá" subtitle="Quét mã vạch, tạo list và xuất Excel">
-        <button onClick={createList} className="rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground">
+    <div className="mx-auto max-w-3xl">
+      <PageHeader title="Tem giá" subtitle="Tìm kiếm sản phẩm, quét mã vạch và xuất file in tem">
+        <button onClick={createList} className="rounded-lg bg-primary px-3.5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors">
           + List mới
         </button>
       </PageHeader>
@@ -146,93 +171,156 @@ export default function LabelsPage() {
         <Card className="text-sm">
           {lists.length ? (
             <label className="block">
-              Chọn list:
+              Chọn list tem để bắt đầu:
               <select
-                className="mt-1 block w-full rounded-lg border border-border bg-card p-2"
+                className="mt-2 block w-full rounded-xl border border-border bg-card p-2.5 text-sm"
                 value=""
                 onChange={(e) => switchList(e.target.value)}
               >
                 <option value="" disabled>
-                  — chọn —
+                  — Chọn danh sách —
                 </option>
+                {lists.map((l) => (
+                  <option key={l.id} value={l.id}>
+                    {l.name} ({l.items.length} sản phẩm)
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : (
+            "Chưa có list nào. Bấm “+ List mới” ở góc trên để tạo danh sách tem đầu tiên."
+          )}
+        </Card>
+      ) : (
+        <>
+          {/* Thanh chọn list và thao tác */}
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-2 text-sm">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted">Đang xem:</span>
+              <select
+                className="rounded-lg border border-border bg-card px-3 py-1.5 font-medium"
+                value={active.id}
+                onChange={(e) => switchList(e.target.value)}
+              >
                 {lists.map((l) => (
                   <option key={l.id} value={l.id}>
                     {l.name} ({l.items.length})
                   </option>
                 ))}
               </select>
-            </label>
-          ) : (
-            "Chưa có list nào. Bấm “+ List mới” để bắt đầu."
-          )}
-        </Card>
-      ) : (
-        <>
-          <div className="mb-3 flex flex-wrap items-center gap-2 text-sm">
-            <select
-              className="rounded-lg border border-border bg-card p-2"
-              value={active.id}
-              onChange={(e) => switchList(e.target.value)}
-            >
-              {lists.map((l) => (
-                <option key={l.id} value={l.id}>
-                  {l.name} ({l.items.length})
-                </option>
-              ))}
-            </select>
-            <button onClick={deleteList} className="text-danger">
-              Xóa list
-            </button>
-            <button
-              onClick={() => setScanning((s) => !s)}
-              className="ml-auto rounded-lg border border-border px-3 py-2"
-            >
-              {scanning ? "Tắt camera" : "▤ Quét bằng camera"}
+            </div>
+            <button onClick={deleteList} className="text-xs text-danger hover:underline">
+              Xóa list này
             </button>
           </div>
 
-          {scanning && <BarcodeScanner onDetect={addByScan} onClose={() => setScanning(false)} />}
-
-          <form
-            className="mb-2 flex gap-2"
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (manual.trim()) addByScan(manual);
-              setManual("");
-            }}
-          >
-            <input
-              value={manual}
-              onChange={(e) => setManual(e.target.value)}
-              inputMode="numeric"
-              placeholder="Nhập mã vạch / mã hàng rồi Enter"
-              className="min-w-0 flex-1 rounded-lg border border-border bg-card px-3 py-2 text-sm"
-            />
-            <button className="rounded-lg border border-border px-3 text-sm">Thêm</button>
-          </form>
-
+          {/* 1 ô input duy nhất tìm kiếm & append icon quét mã vạch */}
           <div className="relative mb-3">
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Tìm theo tên / mã hàng (dành cho SP không có mã vạch)"
-              className="w-full rounded-lg border border-border bg-card px-3 py-2 text-sm"
-            />
-            {results.length > 0 && (
-              <ul className="absolute z-10 mt-1 max-h-64 w-full overflow-auto rounded-lg border border-border bg-card text-sm shadow-lg">
-                {results.map((p) => (
+            <div className="relative flex items-center">
+              <input
+                ref={searchInputRef}
+                value={query}
+                onChange={(e) => {
+                  setQuery(e.target.value);
+                  setSelectedIndex(-1);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    const val = query.trim();
+                    if (!val) return;
+
+                    // 1. Thử tìm chính xác theo mã vạch / mã hàng
+                    const exact = index.find(val);
+                    if (exact) {
+                      void addProduct(exact);
+                      setQuery("");
+                      return;
+                    }
+
+                    // 2. Nếu có kết quả tìm kiếm thì thêm kết quả đang chọn hoặc đầu tiên
+                    if (results.length > 0) {
+                      const item =
+                        selectedIndex >= 0 && selectedIndex < results.length
+                          ? results[selectedIndex]
+                          : results[0];
+                      void addProduct(item);
+                      setQuery("");
+                      return;
+                    }
+
+                    setMsg({ kind: "error", text: `Không tìm thấy sản phẩm nào khớp với "${val}".` });
+                  } else if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    setSelectedIndex((i) => (i < results.length - 1 ? i + 1 : i));
+                  } else if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    setSelectedIndex((i) => (i > 0 ? i - 1 : -1));
+                  } else if (e.key === "Escape") {
+                    setQuery("");
+                  }
+                }}
+                placeholder="Tìm kiếm theo tên sản phẩm, mã vạch hoặc mã hàng..."
+                className="w-full rounded-xl border border-border bg-card py-2.5 pl-3.5 pr-11 text-sm shadow-xs transition-colors focus:border-primary focus:outline-hidden focus:ring-2 focus:ring-primary/20"
+              />
+
+              {/* Icon Quét mã vạch append ở góc phải ô input */}
+              <button
+                type="button"
+                onClick={() => {
+                  setScanError("");
+                  setScanning(true);
+                }}
+                title="Bấm để mở camera quét mã vạch"
+                aria-label="Quét mã vạch"
+                className="absolute inset-y-1 right-1 flex items-center justify-center rounded-lg px-2.5 text-muted hover:bg-background hover:text-primary transition-colors"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="h-5 w-5"
+                >
+                  <path d="M3 7V5a2 2 0 0 1 2-2h2" />
+                  <path d="M17 3h2a2 2 0 0 1 2 2v2" />
+                  <path d="M21 17v2a2 2 0 0 1-2 2h-2" />
+                  <path d="M7 21H5a2 2 0 0 1-2-2v-2" />
+                  <line x1="7" y1="8" x2="7" y2="16" />
+                  <line x1="12" y1="8" x2="12" y2="16" />
+                  <line x1="17" y1="8" x2="17" y2="16" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Dropdown gợi ý tìm kiếm */}
+            {query.trim().length > 0 && results.length > 0 && (
+              <ul className="absolute z-20 mt-1 max-h-64 w-full overflow-auto rounded-xl border border-border bg-card text-sm shadow-xl">
+                {results.map((p, idx) => (
                   <li key={p.code}>
                     <button
-                      className="flex w-full justify-between gap-2 px-3 py-2 text-left hover:bg-background"
+                      type="button"
+                      className={`flex w-full justify-between gap-2 px-3.5 py-2.5 text-left transition-colors ${
+                        idx === selectedIndex ? "bg-primary/10 text-primary" : "hover:bg-background"
+                      }`}
                       onClick={() => {
                         void addProduct(p);
                         setQuery("");
                       }}
                     >
                       <span className="truncate">
-                        {p.name} <span className="text-muted">· {p.unit}</span>
+                        <span className="font-medium">{p.name}</span>{" "}
+                        <span className="text-xs text-muted">
+                          · {p.unit || "Cái"} · Mã: {p.code}
+                          {p.barcode ? ` · Vạch: ${p.barcode}` : ""}
+                        </span>
                       </span>
-                      <span className="tabular-nums text-muted">{formatNumber(p.price)}</span>
+                      <span className="shrink-0 font-medium tabular-nums text-muted">
+                        {formatNumber(p.price)} đ
+                      </span>
                     </button>
                   </li>
                 ))}
@@ -240,36 +328,71 @@ export default function LabelsPage() {
             )}
           </div>
 
+          {/* Thông báo thao tác thêm/xóa */}
           {msg && (
-            <p className={`mb-3 text-sm ${msg.kind === "error" ? "text-danger" : "text-muted"}`}>
+            <p className={`mb-3 text-sm font-medium ${msg.kind === "error" ? "text-danger" : "text-primary"}`}>
               {msg.text}
             </p>
           )}
 
+          {/* Popup Modal quét mã vạch */}
+          {scanning && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs animate-in fade-in duration-150">
+              <div className="relative w-full max-w-lg overflow-hidden rounded-2xl border border-border bg-card shadow-2xl">
+                <div className="flex items-center justify-between border-b border-border px-4 py-3">
+                  <h3 className="flex items-center gap-2 font-semibold text-base">
+                    <span>📷</span> Quét mã vạch sản phẩm
+                  </h3>
+                  <button
+                    onClick={() => {
+                      setScanning(false);
+                      setScanError("");
+                    }}
+                    className="rounded-lg p-1 text-muted hover:bg-background hover:text-foreground text-lg leading-none"
+                    aria-label="Đóng popup"
+                  >
+                    ✕
+                  </button>
+                </div>
+                <div className="p-4">
+                  <BarcodeScanner
+                    onDetect={handleDetectBarcode}
+                    onClose={() => {
+                      setScanning(false);
+                      setScanError("");
+                    }}
+                    scanError={scanError}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Bảng danh sách sản phẩm trong list tem */}
           <Card className="overflow-x-auto p-0">
             <table className="w-full text-sm">
-              <thead className="border-b border-border text-left text-xs text-muted">
+              <thead className="border-b border-border text-left text-xs font-semibold text-muted">
                 <tr>
                   <th className="p-3">Tên sản phẩm</th>
                   <th className="p-3">Mã hàng</th>
                   <th className="p-3">Mã vạch</th>
                   <th className="p-3 text-right">Giá bán</th>
                   <th className="p-3">ĐVT</th>
-                  <th className="p-3" />
+                  <th className="p-3 text-center">Xóa</th>
                 </tr>
               </thead>
               <tbody>
                 {active.items.map((i) => (
-                  <tr key={i.code} className="border-b border-border last:border-0">
-                    <td className="p-3">{i.name}</td>
-                    <td className="p-3 tabular-nums">{i.code}</td>
-                    <td className="p-3 tabular-nums">{i.barcode || "–"}</td>
-                    <td className="p-3 text-right tabular-nums">{formatNumber(i.price)}</td>
-                    <td className="p-3">{i.unit}</td>
-                    <td className="p-3">
+                  <tr key={i.code} className="border-b border-border last:border-0 hover:bg-background/50 transition-colors">
+                    <td className="p-3 font-medium">{i.name}</td>
+                    <td className="p-3 tabular-nums text-muted">{i.code}</td>
+                    <td className="p-3 tabular-nums text-muted">{i.barcode || "–"}</td>
+                    <td className="p-3 text-right font-medium tabular-nums">{formatNumber(i.price)} đ</td>
+                    <td className="p-3 text-muted">{i.unit}</td>
+                    <td className="p-3 text-center">
                       <button
                         onClick={() => void removeItem(i.code)}
-                        className="text-danger"
+                        className="rounded p-1 text-danger hover:bg-danger/10 transition-colors"
                         aria-label="Xóa dòng"
                       >
                         ✕
@@ -279,8 +402,8 @@ export default function LabelsPage() {
                 ))}
                 {!active.items.length && (
                   <tr>
-                    <td colSpan={6} className="p-6 text-center text-muted">
-                      List trống. Quét mã vạch hoặc tìm sản phẩm để thêm.
+                    <td colSpan={6} className="p-8 text-center text-muted">
+                      List tem đang trống. Tìm kiếm hoặc bấm icon quét mã vạch ở ô trên để thêm sản phẩm.
                     </td>
                   </tr>
                 )}
@@ -288,14 +411,15 @@ export default function LabelsPage() {
             </table>
           </Card>
 
-          <div className="mt-3 flex items-center justify-between text-sm">
-            <span className="text-muted">{active.items.length} sản phẩm</span>
+          {/* Thanh chân trang: số lượng và nút Xuất Excel */}
+          <div className="mt-4 flex items-center justify-between text-sm">
+            <span className="text-muted">Tổng cộng: <b>{active.items.length}</b> sản phẩm</span>
             <button
               disabled={!active.items.length}
               onClick={() => void exportListXlsx(active)}
-              className="rounded-lg bg-primary px-4 py-2 text-primary-foreground disabled:opacity-50"
+              className="flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 font-medium text-primary-foreground shadow-xs hover:bg-primary/90 disabled:opacity-50 transition-colors"
             >
-              Xuất Excel
+              <span>📥</span> Xuất Excel
             </button>
           </div>
         </>

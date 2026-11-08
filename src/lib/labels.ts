@@ -48,7 +48,7 @@ export async function fetchLists(): Promise<LabelList[]> {
     id: l.id,
     name: l.name,
     items: [...l.label_items]
-      .sort((a, b) => a.added_at.localeCompare(b.added_at))
+      .sort((a, b) => b.added_at.localeCompare(a.added_at))
       .map((i) => ({
         code: i.product_code,
         barcode: i.barcode ?? "",
