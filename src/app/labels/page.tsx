@@ -193,7 +193,7 @@ export default function LabelsPage() {
         </Card>
       ) : (
         <>
-          {/* Thanh chọn list và thao tác */}
+          {/* Thanh chọn list và thao tác phía trên (đã đưa nút Xuất Excel lên đầu) */}
           <div className="mb-4 flex flex-wrap items-center justify-between gap-2 text-sm">
             <div className="flex items-center gap-2">
               <span className="text-xs text-muted">Đang xem:</span>
@@ -208,10 +208,39 @@ export default function LabelsPage() {
                   </option>
                 ))}
               </select>
+              <button onClick={deleteList} className="text-xs text-danger hover:underline">
+                Xóa list
+              </button>
             </div>
-            <button onClick={deleteList} className="text-xs text-danger hover:underline">
-              Xóa list này
-            </button>
+
+            {/* Nút Xuất Excel đưa lên ĐẦU bảng */}
+            <div className="flex items-center gap-2.5">
+              <span className="text-xs text-muted font-medium">
+                {active.items.length} sản phẩm
+              </span>
+              <button
+                disabled={!active.items.length}
+                onClick={() => void exportListXlsx(active)}
+                className="flex items-center gap-1.5 rounded-lg bg-primary px-3.5 py-1.5 text-xs font-medium text-primary-foreground shadow-xs hover:bg-primary/90 disabled:opacity-50 transition-colors"
+                title="Xuất danh sách ra file Excel"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="h-4 w-4"
+                >
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="7 10 12 15 17 10" />
+                  <line x1="12" y1="15" x2="12" y2="3" />
+                </svg>
+                <span>Xuất Excel</span>
+              </button>
+            </div>
           </div>
 
           {/* 1 ô input duy nhất tìm kiếm & append icon quét mã vạch */}
@@ -373,31 +402,49 @@ export default function LabelsPage() {
             <table className="w-full text-sm">
               <thead className="border-b border-border text-left text-xs font-semibold text-muted">
                 <tr>
-                  <th className="p-3">Tên sản phẩm</th>
+                  <th className="p-3 w-10 text-center" aria-label="Xóa"></th>
+                  <th className="p-3 min-w-[100px]">Tên hàng hóa</th>
                   <th className="p-3">Mã hàng</th>
                   <th className="p-3">Mã vạch</th>
                   <th className="p-3 text-right">Giá bán</th>
                   <th className="p-3">ĐVT</th>
-                  <th className="p-3 text-center">Xóa</th>
                 </tr>
               </thead>
               <tbody>
                 {active.items.map((i) => (
                   <tr key={i.code} className="border-b border-border last:border-0 hover:bg-background/50 transition-colors">
-                    <td className="p-3 font-medium">{i.name}</td>
+                    {/* Cột 1: Nút xóa icon thùng rác */}
+                    <td className="p-3 text-center w-10">
+                      <button
+                        type="button"
+                        onClick={() => void removeItem(i.code)}
+                        className="rounded-lg p-1.5 text-muted hover:bg-danger/10 hover:text-danger transition-colors inline-flex items-center justify-center"
+                        title={`Xóa ${i.name}`}
+                        aria-label={`Xóa ${i.name}`}
+                      >
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          className="h-4 w-4"
+                        >
+                          <path d="M3 6h18" />
+                          <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+                          <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+                          <line x1="10" y1="11" x2="10" y2="17" />
+                          <line x1="14" y1="11" x2="14" y2="17" />
+                        </svg>
+                      </button>
+                    </td>
+                    <td className="p-3 font-medium min-w-[100px]">{i.name}</td>
                     <td className="p-3 tabular-nums text-muted">{i.code}</td>
                     <td className="p-3 tabular-nums text-muted">{i.barcode || "–"}</td>
                     <td className="p-3 text-right font-medium tabular-nums">{formatNumber(i.price)} đ</td>
                     <td className="p-3 text-muted">{i.unit}</td>
-                    <td className="p-3 text-center">
-                      <button
-                        onClick={() => void removeItem(i.code)}
-                        className="rounded p-1 text-danger hover:bg-danger/10 transition-colors"
-                        aria-label="Xóa dòng"
-                      >
-                        ✕
-                      </button>
-                    </td>
                   </tr>
                 ))}
                 {!active.items.length && (
@@ -410,18 +457,6 @@ export default function LabelsPage() {
               </tbody>
             </table>
           </Card>
-
-          {/* Thanh chân trang: số lượng và nút Xuất Excel */}
-          <div className="mt-4 flex items-center justify-between text-sm">
-            <span className="text-muted">Tổng cộng: <b>{active.items.length}</b> sản phẩm</span>
-            <button
-              disabled={!active.items.length}
-              onClick={() => void exportListXlsx(active)}
-              className="flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 font-medium text-primary-foreground shadow-xs hover:bg-primary/90 disabled:opacity-50 transition-colors"
-            >
-              <span>📥</span> Xuất Excel
-            </button>
-          </div>
         </>
       )}
     </div>

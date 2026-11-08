@@ -99,7 +99,7 @@ export default function CatalogPage() {
       {error && <p className="text-sm text-danger">{error}</p>}
       {warnings.length > 0 && (
         <Card className="mb-4 border-amber-500/50 bg-amber-500/10 text-sm">
-          <p className="font-semibold text-amber-600 dark:text-amber-400">
+          <p className="font-semibold text-amber-700">
             Có {warnings.length} sản phẩm gặp lỗi và đã được bỏ qua hoặc tự gán giá 0:
           </p>
           <ul className="mt-2 max-h-40 list-disc space-y-1 overflow-y-auto pl-5 text-xs text-muted">
