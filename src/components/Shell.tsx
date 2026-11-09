@@ -66,9 +66,9 @@ function Frame({ children }: { children: React.ReactNode }) {
         </nav>
 
         <div className="mt-auto border-t border-border pt-3">
-          {user?.email && (
-            <div className="mb-2 truncate text-xs text-muted" title={user.email}>
-              {user.email}
+          {user?.name && (
+            <div className="mb-2 truncate text-xs text-muted" title={user.name}>
+              {user.name}
             </div>
           )}
           <button
