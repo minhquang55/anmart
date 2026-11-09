@@ -84,9 +84,8 @@ function Frame({ children }: { children: React.ReactNode }) {
 
       {/* Thanh điều hướng dưới cho điện thoại */}
       <nav
-        className="fixed inset-x-0 bottom-0 z-10 border-t border-border bg-sidebar md:hidden"
+        className="fixed inset-x-0 bottom-0 z-10 grid border-t border-border bg-sidebar md:!hidden"
         style={{
-          display: "grid",
           gridTemplateColumns: `repeat(${navItems.length}, minmax(0, 1fr))`,
         }}
       >
