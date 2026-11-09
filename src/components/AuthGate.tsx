@@ -149,9 +149,9 @@ function LoginForm() {
       return;
     }
 
-    // 2. Nếu là số điện thoại hoặc username, thử tìm email qua RPC get_login_email
+    // 2. Thử tìm email qua số điện thoại từ bảng profiles
     try {
-      const { data: foundEmail, error: rpcErr } = await sb.rpc("get_login_email", { identifier: account });
+      const { data: foundEmail } = await sb.rpc("get_login_email", { identifier: account });
       if (foundEmail) {
         const { error: errFound } = await sb.auth.signInWithPassword({
           email: foundEmail,
@@ -162,14 +162,10 @@ function LoginForm() {
           return;
         }
         lastError = errFound.message;
-      } else if (rpcErr) {
-        console.warn("RPC get_login_email error:", rpcErr.message);
       }
-    } catch (e) {
-      console.warn("RPC call failed:", e);
-    }
+    } catch {}
 
-    // 3. Thử đăng nhập quy ước số điện thoại dạng @anmart.vn
+    // 3. Đăng nhập theo quy ước số điện thoại gắn đuôi @anmart.vn (không cần bật nhà mạng SMS)
     const cleanPhone = account.replace(/[^0-9]/g, "");
     if (cleanPhone) {
       const { error: errEmail } = await sb.auth.signInWithPassword({
@@ -181,28 +177,12 @@ function LoginForm() {
         return;
       }
       lastError = errEmail.message;
-
-      // 4. Thử đăng nhập chuẩn số điện thoại Supabase Auth (E.164: +84...)
-      let phoneE164 = cleanPhone;
-      if (phoneE164.startsWith("0")) {
-        phoneE164 = "+84" + phoneE164.slice(1);
-      } else if (!phoneE164.startsWith("+")) {
-        phoneE164 = "+84" + phoneE164;
-      }
-
-      const { error: errPhone } = await sb.auth.signInWithPassword({
-        phone: phoneE164,
-        password,
-      });
-      if (!errPhone) {
-        setBusy(false);
-        return;
-      }
-      lastError = errPhone.message;
     }
 
-    if (lastError && lastError !== "Invalid login credentials") {
-      setError(`Lỗi: ${lastError}`);
+    if (lastError === "Invalid login credentials") {
+      setError("Số điện thoại/Email hoặc mật khẩu không chính xác.");
+    } else if (lastError) {
+      setError(`Lỗi đăng nhập: ${lastError}`);
     } else {
       setError("Số điện thoại/Email hoặc mật khẩu không chính xác.");
     }
