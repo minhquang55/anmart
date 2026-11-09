@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useAuth } from "@/components/AuthGate";
 import { Card, PageHeader } from "@/components/ui";
 import {
   importCatalogToDb,
@@ -12,6 +13,7 @@ import {
 import { formatNumber } from "@/lib/denominations";
 
 export default function CatalogPage() {
+  const { isAdmin } = useAuth();
   const [info, setInfo] = useState<{ count: number; updatedAt: string | null } | null>(() => {
     const local = loadCatalog();
     return { count: local.items.length, updatedAt: local.updatedAt };
@@ -24,10 +26,26 @@ export default function CatalogPage() {
 
   // Lấy danh mục mới nhất từ DB khi mở trang (đã khởi tạo từ bản cục bộ).
   useEffect(() => {
+    if (!isAdmin) return;
     syncCatalog()
       .then((d) => setInfo({ count: d.items.length, updatedAt: d.updatedAt }))
       .catch((e: Error) => setError(`Không tải được danh mục từ DB: ${e.message}`));
-  }, []);
+  }, [isAdmin]);
+
+  if (!isAdmin) {
+    return (
+      <div className="mx-auto max-w-lg p-4">
+        <PageHeader title="Danh mục sản phẩm" subtitle="Quyền truy cập bị giới hạn" />
+        <Card className="p-8 text-center">
+          <div className="mb-3 text-4xl">🔒</div>
+          <h2 className="mb-2 text-base font-bold">Chỉ dành cho Admin</h2>
+          <p className="text-sm text-muted">
+            Chức năng Quản lý Danh mục chỉ hiển thị và thao tác được với tài khoản có quyền <b>Admin</b>.
+          </p>
+        </Card>
+      </div>
+    );
+  }
 
   async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];

@@ -1,8 +1,28 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import type { Session } from "@supabase/supabase-js";
+import { createContext, useContext, useEffect, useState } from "react";
+import type { Session, User } from "@supabase/supabase-js";
 import { getSupabase } from "@/lib/supabase";
+
+export type UserRole = "admin" | "staff";
+
+export interface AuthContextType {
+  user: User | null;
+  role: UserRole;
+  isAdmin: boolean;
+  signOut: () => void;
+}
+
+export const AuthContext = createContext<AuthContextType>({
+  user: null,
+  role: "staff",
+  isAdmin: false,
+  signOut: () => {},
+});
+
+export function useAuth(): AuthContextType {
+  return useContext(AuthContext);
+}
 
 function checkConfigError(): string {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -13,31 +33,89 @@ function checkConfigError(): string {
   return "";
 }
 
+/** Xác định role từ user metadata hoặc bảng profiles trong DB */
+async function resolveRole(user: User): Promise<UserRole> {
+  // 1. Kiểm tra metadata trực tiếp từ Supabase Auth (nếu admin set trong Auth)
+  const metaRole = (user.app_metadata?.role || user.user_metadata?.role)?.toLowerCase();
+  if (metaRole === "admin") return "admin";
+
+  // 2. Thử truy vấn bảng public.profiles trong database
+  try {
+    const sb = getSupabase();
+    // Tự động đảm bảo user có bản ghi trong profiles
+    await sb
+      .from("profiles")
+      .upsert({ id: user.id, email: user.email }, { onConflict: "id", ignoreDuplicates: true });
+
+    const { data } = await sb
+      .from("profiles")
+      .select("role")
+      .eq("id", user.id)
+      .maybeSingle();
+
+    if (data?.role?.toLowerCase() === "admin") {
+      return "admin";
+    }
+  } catch {}
+
+  return "staff";
+}
+
 /** Chặn truy cập khi chưa đăng nhập Supabase (email + mật khẩu). */
 export default function AuthGate({
   children,
 }: {
-  children: (signOut: () => void) => React.ReactNode;
+  children: React.ReactNode | ((signOut: () => void) => React.ReactNode);
 }) {
   const [configError] = useState(checkConfigError);
   const [session, setSession] = useState<Session | null>(null);
+  const [role, setRole] = useState<UserRole>("staff");
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
     if (configError) return;
     const sb = getSupabase();
-    void sb.auth.getSession().then(({ data }) => {
-      setSession(data.session);
+
+    async function handleSession(s: Session | null) {
+      setSession(s);
+      if (s?.user) {
+        const r = await resolveRole(s.user);
+        setRole(r);
+      } else {
+        setRole("staff");
+      }
       setReady(true);
+    }
+
+    void sb.auth.getSession().then(({ data }) => {
+      void handleSession(data.session);
     });
-    const { data } = sb.auth.onAuthStateChange((_e, s) => setSession(s));
+
+    const { data } = sb.auth.onAuthStateChange((_e, s) => {
+      void handleSession(s);
+    });
+
     return () => data.subscription.unsubscribe();
   }, [configError]);
 
   if (configError) return <div className="p-6 text-sm text-danger">{configError}</div>;
   if (!ready) return <div className="p-6 text-sm text-muted">Đang tải...</div>;
   if (!session) return <LoginForm />;
-  return <>{children(() => void getSupabase().auth.signOut())}</>;
+
+  const signOut = () => void getSupabase().auth.signOut();
+
+  return (
+    <AuthContext.Provider
+      value={{
+        user: session.user,
+        role,
+        isAdmin: role === "admin",
+        signOut,
+      }}
+    >
+      {typeof children === "function" ? children(signOut) : children}
+    </AuthContext.Provider>
+  );
 }
 
 function LoginForm() {
@@ -62,7 +140,7 @@ function LoginForm() {
       if (error) {
         setError(`Đăng ký thất bại: ${error.message}`);
       } else if (data.session) {
-        // Tự động đăng nhập nếu không bật confirm email
+        // Tự động đăng nhập
       } else {
         setSuccess("Đăng ký thành công! Nếu cần xác thực email, hãy kiểm tra hộp thư hoặc vào Supabase xác nhận.");
       }
@@ -140,4 +218,3 @@ function LoginForm() {
     </div>
   );
 }
-
