@@ -137,12 +137,13 @@ function LoginForm() {
     }
 
     const sb = getSupabase();
+    let lastError = "";
 
     // 1. Nếu có @, đăng nhập bằng email trực tiếp
     if (account.includes("@")) {
       const { error: err } = await sb.auth.signInWithPassword({ email: account, password });
       if (err) {
-        setError("Email hoặc mật khẩu không đúng.");
+        setError(err.message === "Invalid login credentials" ? "Email hoặc mật khẩu không chính xác." : `Lỗi đăng nhập: ${err.message}`);
       }
       setBusy(false);
       return;
@@ -150,7 +151,7 @@ function LoginForm() {
 
     // 2. Nếu là số điện thoại hoặc username, thử tìm email qua RPC get_login_email
     try {
-      const { data: foundEmail } = await sb.rpc("get_login_email", { identifier: account });
+      const { data: foundEmail, error: rpcErr } = await sb.rpc("get_login_email", { identifier: account });
       if (foundEmail) {
         const { error: errFound } = await sb.auth.signInWithPassword({
           email: foundEmail,
@@ -160,8 +161,13 @@ function LoginForm() {
           setBusy(false);
           return;
         }
+        lastError = errFound.message;
+      } else if (rpcErr) {
+        console.warn("RPC get_login_email error:", rpcErr.message);
       }
-    } catch {}
+    } catch (e) {
+      console.warn("RPC call failed:", e);
+    }
 
     // 3. Thử đăng nhập quy ước số điện thoại dạng @anmart.vn
     const cleanPhone = account.replace(/[^0-9]/g, "");
@@ -174,6 +180,7 @@ function LoginForm() {
         setBusy(false);
         return;
       }
+      lastError = errEmail.message;
 
       // 4. Thử đăng nhập chuẩn số điện thoại Supabase Auth (E.164: +84...)
       let phoneE164 = cleanPhone;
@@ -191,9 +198,14 @@ function LoginForm() {
         setBusy(false);
         return;
       }
+      lastError = errPhone.message;
     }
 
-    setError("Số điện thoại/Email hoặc mật khẩu không đúng.");
+    if (lastError && lastError !== "Invalid login credentials") {
+      setError(`Lỗi: ${lastError}`);
+    } else {
+      setError("Số điện thoại/Email hoặc mật khẩu không chính xác.");
+    }
     setBusy(false);
   }
 
