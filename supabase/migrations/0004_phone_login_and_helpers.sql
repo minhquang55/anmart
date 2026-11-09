@@ -106,3 +106,4 @@ begin
   end if;
 end;
 $$ language plpgsql security definer;
+
