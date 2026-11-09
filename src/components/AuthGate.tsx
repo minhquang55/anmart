@@ -8,6 +8,7 @@ export type UserRole = "admin" | "staff";
 export interface AppUser {
   id: string;
   name: string;
+  displayName: string;
   role: UserRole;
 }
 
@@ -57,7 +58,6 @@ export default function AuthGate({
   const snapshot = useSyncExternalStore(subscribe, getStoredSnapshot, getServerSnapshot);
   const [localUser, setLocalUser] = useState<AppUser | null>(null);
 
-  // Xác định user từ snapshot hoặc state cục bộ vừa đăng nhập
   let currentUser: AppUser | null = localUser;
   if (!currentUser && snapshot) {
     try {
@@ -101,28 +101,69 @@ export default function AuthGate({
 
 function LoginForm({ onLogin }: { onLogin: (user: AppUser) => void }) {
   const [identifier, setIdentifier] = useState("");
-  const [role, setRole] = useState<UserRole>("staff");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
-  function submit(e: React.FormEvent) {
+  async function submit(e: React.FormEvent) {
     e.preventDefault();
-    const name = identifier.trim();
-    if (!name) return;
+    setError("");
+    const account = identifier.trim();
+    if (!account || !password) {
+      setError("Vui lòng nhập tài khoản và mật khẩu");
+      return;
+    }
 
     setBusy(true);
+    const sb = getSupabase();
 
-    // Tự động gán quyền admin nếu tên hoặc sđt chứa từ khoá "admin"
-    const finalRole: UserRole =
-      role === "admin" || name.toLowerCase().includes("admin") ? "admin" : "staff";
+    try {
+      // 1. Thử xác thực qua bảng staff_accounts (hỗ trợ text tự do, sđt, email)
+      const { data, error: rpcErr } = await sb.rpc("verify_staff_login", {
+        p_username: account,
+        p_password: password,
+      });
 
-    const user: AppUser = {
-      id: name,
-      name,
-      role: finalRole,
-    };
+      if (!rpcErr && data) {
+        const res = data as { username: string; role: string; display_name: string };
+        onLogin({
+          id: res.username,
+          name: res.username,
+          displayName: res.display_name || res.username,
+          role: res.role === "admin" ? "admin" : "staff",
+        });
+        setBusy(false);
+        return;
+      }
 
-    onLogin(user);
-    setBusy(false);
+      // 2. Fallback thử qua Supabase Auth truyền thống (nếu tài khoản dạng email có sẵn trong auth.users)
+      const emailToTry = account.includes("@") ? account : `${account.replace(/[^0-9]/g, "")}@anmart.vn`;
+      const { data: authData, error: authErr } = await sb.auth.signInWithPassword({
+        email: emailToTry,
+        password,
+      });
+
+      if (!authErr && authData.user) {
+        // Lấy role từ metadata
+        const userMeta = authData.user.user_metadata || {};
+        const isAdmin = userMeta.role === "admin" || account.toLowerCase().includes("admin");
+        onLogin({
+          id: authData.user.id,
+          name: account,
+          displayName: account,
+          role: isAdmin ? "admin" : "staff",
+        });
+        setBusy(false);
+        return;
+      }
+
+      setError("Tài khoản hoặc mật khẩu không chính xác.");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(`Lỗi đăng nhập: ${msg}`);
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
@@ -142,7 +183,7 @@ function LoginForm({ onLogin }: { onLogin: (user: AppUser) => void }) {
         <div className="space-y-3">
           <div>
             <label className="mb-1 block text-xs font-medium text-foreground">
-              Tên đăng nhập / Số điện thoại / Email
+              Tên tài khoản (SĐT / Chữ / Email)
             </label>
             <input
               type="text"
@@ -150,51 +191,41 @@ function LoginForm({ onLogin }: { onLogin: (user: AppUser) => void }) {
               autoFocus
               value={identifier}
               onChange={(e) => setIdentifier(e.target.value)}
-              placeholder="Nhập bất kỳ (SĐT, tên, email...)"
+              placeholder="VD: admin, 0912345678, user1..."
               className="w-full rounded-xl border border-border bg-transparent px-3.5 py-2.5 text-sm transition-colors focus:border-primary focus:outline-hidden focus:ring-2 focus:ring-primary/20"
             />
           </div>
 
           <div>
             <label className="mb-1 block text-xs font-medium text-foreground">
-              Vai trò (Role)
+              Mật khẩu
             </label>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => setRole("staff")}
-                className={`rounded-xl border py-2 text-xs font-medium transition-all ${
-                  role === "staff"
-                    ? "border-primary bg-primary/10 text-primary font-semibold"
-                    : "border-border text-muted hover:bg-muted/10"
-                }`}
-              >
-                Nhân viên (Staff)
-              </button>
-              <button
-                type="button"
-                onClick={() => setRole("admin")}
-                className={`rounded-xl border py-2 text-xs font-medium transition-all ${
-                  role === "admin"
-                    ? "border-primary bg-primary/10 text-primary font-semibold"
-                    : "border-border text-muted hover:bg-muted/10"
-                }`}
-              >
-                Quản lý (Admin)
-              </button>
-            </div>
+            <input
+              type="password"
+              required
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Nhập mật khẩu"
+              className="w-full rounded-xl border border-border bg-transparent px-3.5 py-2.5 text-sm transition-colors focus:border-primary focus:outline-hidden focus:ring-2 focus:ring-primary/20"
+            />
           </div>
         </div>
 
+        {error && (
+          <div className="rounded-lg bg-danger/10 p-2.5 text-xs font-medium text-danger">
+            ⚠️ {error}
+          </div>
+        )}
+
         <button
-          disabled={busy || !identifier.trim()}
+          disabled={busy || !identifier.trim() || !password}
           className="w-full rounded-xl bg-primary py-2.5 text-sm font-semibold text-primary-foreground shadow-xs hover:bg-primary/90 disabled:opacity-50 transition-colors"
         >
-          {busy ? "Đang vào..." : "Vào cửa hàng"}
+          {busy ? "Đang kiểm tra..." : "Đăng nhập"}
         </button>
 
         <p className="pt-2 text-center text-[11px] text-muted">
-          Đăng nhập trực tiếp, không cần mật khẩu hay mã xác thực
+          Tài khoản do quản trị viên cấp qua hệ thống database
         </p>
       </form>
     </div>
