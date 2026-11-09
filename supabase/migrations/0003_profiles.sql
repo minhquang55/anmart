@@ -27,3 +27,4 @@ on conflict (id) do nothing;
 -- LỆNH GÁN QUYỀN ADMIN:
 -- Thay 'email-cua-ban@gmail.com' bằng email bạn đã đăng ký để nâng lên Admin:
 -- update public.profiles set role = 'admin' where email = 'email-cua-ban@gmail.com';
+
