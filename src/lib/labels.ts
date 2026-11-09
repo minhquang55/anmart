@@ -6,6 +6,7 @@ const ACTIVE_KEY = "anmart.labels.active";
 export interface LabelList {
   id: string;
   name: string;
+  created_at?: string;
   items: Product[];
 }
 
@@ -42,11 +43,12 @@ export async function fetchLists(): Promise<LabelList[]> {
   const { data, error } = await getSupabase()
     .from("label_lists")
     .select("id,name,created_at,label_items(product_code,barcode,name,price,unit,added_at)")
-    .order("created_at");
+    .order("created_at", { ascending: false });
   if (error) throw new Error(error.message);
   return (data as ListRow[]).map((l) => ({
     id: l.id,
     name: l.name,
+    created_at: l.created_at,
     items: [...l.label_items]
       .sort((a, b) => b.added_at.localeCompare(a.added_at))
       .map((i) => ({
@@ -63,10 +65,15 @@ export async function createListDb(name: string): Promise<LabelList> {
   const { data, error } = await getSupabase()
     .from("label_lists")
     .insert({ name })
-    .select("id,name")
+    .select("id,name,created_at")
     .single();
   if (error) throw new Error(error.message);
-  return { id: data.id, name: data.name, items: [] };
+  return { id: data.id, name: data.name, created_at: data.created_at, items: [] };
+}
+
+export async function updateListNameDb(id: string, name: string): Promise<void> {
+  const { error } = await getSupabase().from("label_lists").update({ name }).eq("id", id);
+  if (error) throw new Error(error.message);
 }
 
 export async function deleteListDb(id: string): Promise<void> {
@@ -98,33 +105,76 @@ export async function removeItemDb(listId: string, code: string): Promise<void> 
   if (error) throw new Error(error.message);
 }
 
-/** Xuất list ra file .xlsx và tải về. */
-export async function exportListXlsx(list: LabelList): Promise<void> {
-  const ExcelJS = (await import("exceljs")).default;
-  const wb = new ExcelJS.Workbook();
-  const ws = wb.addWorksheet("Tem giá");
-  ws.columns = [
-    { header: "Tên sản phẩm", key: "name", width: 40 },
-    { header: "Mã hàng", key: "code", width: 22 },
-    { header: "Mã vạch", key: "barcode", width: 20 },
-    { header: "Giá bán", key: "price", width: 14 },
-    { header: "Đơn vị tính", key: "unit", width: 12 },
-  ];
-  ws.getRow(1).font = { bold: true };
-  for (const it of list.items) ws.addRow(it);
-  // Mã hàng/mã vạch giữ dạng chữ để không mất số 0 đầu.
-  ws.getColumn("code").numFmt = "@";
-  ws.getColumn("barcode").numFmt = "@";
-  ws.getColumn("price").numFmt = "#,##0";
+/** Xuất list ra file Excel định dạng 97-2003 Worksheet (.xls - BIFF8) và tải về. */
+export async function exportListXls(list: LabelList): Promise<void> {
+  const XLSX = await import("xlsx");
 
-  const buf = await wb.xlsx.writeBuffer();
+  // Dữ liệu bảng: Hàng tiêu đề + các hàng sản phẩm
+  const rows: (string | number)[][] = [
+    ["Tên sản phẩm", "Mã hàng", "Mã vạch", "Giá bán", "Đơn vị tính"],
+  ];
+
+  for (const it of list.items) {
+    rows.push([
+      it.name,
+      String(it.code ?? ""), // Dạng chuỗi để giữ nguyên số 0 đầu
+      String(it.barcode ?? ""), // Dạng chuỗi
+      it.price,
+      it.unit || "",
+    ]);
+  }
+
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+
+  // Thiết lập độ rộng cột
+  ws["!cols"] = [
+    { wch: 38 }, // Tên sản phẩm
+    { wch: 18 }, // Mã hàng
+    { wch: 18 }, // Mã vạch
+    { wch: 14 }, // Giá bán
+    { wch: 12 }, // Đơn vị tính
+  ];
+
+  // Định dạng ô
+  for (let r = 1; r < rows.length; r++) {
+    // Cột Mã hàng (B) và Mã vạch (C) là Text (@)
+    const codeCell = ws[XLSX.utils.encode_cell({ r, c: 1 })];
+    if (codeCell) {
+      codeCell.t = "s";
+      codeCell.z = "@";
+    }
+    const barcodeCell = ws[XLSX.utils.encode_cell({ r, c: 2 })];
+    if (barcodeCell) {
+      barcodeCell.t = "s";
+      barcodeCell.z = "@";
+    }
+    // Cột Giá bán (D) định dạng số
+    const priceCell = ws[XLSX.utils.encode_cell({ r, c: 3 })];
+    if (priceCell) {
+      priceCell.t = "n";
+      priceCell.z = "#,##0";
+    }
+  }
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Tem gia");
+
+  // Ghi ra định dạng biff8 (Excel 97-2004 Workbook .xls)
+  const buf = XLSX.write(wb, {
+    bookType: "biff8",
+    type: "array",
+  });
+
   const blob = new Blob([buf], {
-    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    type: "application/vnd.ms-excel",
   });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `tem-gia-${list.name.replace(/[^\p{L}\p{N}_-]+/gu, "_")}.xlsx`;
+  a.download = `tem-gia-${list.name.replace(/[^\p{L}\p{N}_-]+/gu, "_")}.xls`;
   a.click();
   URL.revokeObjectURL(url);
 }
+
+// Alias cho tương thích
+export const exportListXlsx = exportListXls;

@@ -14,6 +14,7 @@ import {
   loadActiveId,
   removeItemDb,
   saveActiveId,
+  updateListNameDb,
   type LabelList,
 } from "@/lib/labels";
 
@@ -22,7 +23,8 @@ type Msg = { kind: "ok" | "error"; text: string } | null;
 export default function LabelsPage() {
   const [catalog, setCatalog] = useState(loadCatalog);
   const [lists, setLists] = useState<LabelList[]>([]);
-  const [activeId, setActiveId] = useState<string | null>(loadActiveId);
+  // activeId: id của nhóm tem đang mở chi tiết. Khi activeId === null => ở màn hình Master (danh sách nhóm tem)
+  const [activeId, setActiveId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
   const [scanError, setScanError] = useState("");
@@ -31,6 +33,13 @@ export default function LabelsPage() {
   const [selectedIndex, setSelectedIndex] = useState(-1);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
+  // State cho Modal Tạo / Đổi tên nhóm tem
+  const [listModalOpen, setListModalOpen] = useState(false);
+  const [listModalMode, setListModalMode] = useState<"create" | "rename">("create");
+  const [editingListId, setEditingListId] = useState<string | null>(null);
+  const [listNameInput, setListNameInput] = useState("");
+  const [listSearchQuery, setListSearchQuery] = useState("");
+
   const index = useMemo(() => buildIndex(catalog.items), [catalog]);
   const active = lists.find((l) => l.id === activeId) ?? null;
   const results = useMemo(() => searchItems(catalog.items, query, 10), [catalog, query]);
@@ -38,43 +47,77 @@ export default function LabelsPage() {
   // Tải danh mục và danh sách list từ DB khi mở trang.
   useEffect(() => {
     Promise.all([
-      syncCatalog().then((c) => setCatalog(c)).catch(() => {}),
+      syncCatalog().then((c) => setCatalog(c)).catch(() => { }),
       fetchLists().then((ls) => {
         setLists(ls);
-        setActiveId((cur) => (cur && ls.some((l) => l.id === cur) ? cur : ls[0]?.id ?? null));
       }),
     ])
       .catch((e: Error) => setMsg({ kind: "error", text: `Lỗi tải dữ liệu: ${e.message}` }))
       .finally(() => setLoading(false));
   }, []);
 
-  function switchList(id: string | null) {
+  function enterDetail(id: string) {
     setActiveId(id);
     saveActiveId(id);
     setMsg(null);
+    setQuery("");
   }
 
-  async function createList() {
-    const name = prompt("Tên list tem mới:", `List ${lists.length + 1}`)?.trim();
+  function backToMaster() {
+    setActiveId(null);
+    saveActiveId(null);
+    setMsg(null);
+    setQuery("");
+  }
+
+  function openCreateListModal() {
+    setListModalMode("create");
+    setEditingListId(null);
+    setListNameInput(`Nhóm tem ${lists.length + 1}`);
+    setListModalOpen(true);
+  }
+
+  function openRenameListModal(list: LabelList, e?: React.MouseEvent) {
+    if (e) e.stopPropagation();
+    setListModalMode("rename");
+    setEditingListId(list.id);
+    setListNameInput(list.name);
+    setListModalOpen(true);
+  }
+
+  async function handleSaveListModal(e: React.FormEvent) {
+    e.preventDefault();
+    const name = listNameInput.trim();
     if (!name) return;
+
     try {
-      const created = await createListDb(name);
-      setLists((ls) => [created, ...ls]);
-      switchList(created.id);
-    } catch (e) {
-      setMsg({ kind: "error", text: `Không tạo được list: ${(e as Error).message}` });
+      if (listModalMode === "create") {
+        const created = await createListDb(name);
+        setLists((ls) => [created, ...ls]);
+        setListModalOpen(false);
+        // Sau khi tạo xong, mở ngay nhóm tem vừa tạo để thêm tem
+        enterDetail(created.id);
+      } else if (listModalMode === "rename" && editingListId) {
+        await updateListNameDb(editingListId, name);
+        setLists((ls) => ls.map((l) => (l.id === editingListId ? { ...l, name } : l)));
+        setListModalOpen(false);
+      }
+    } catch (err) {
+      alert(`Thao tác thất bại: ${(err as Error).message}`);
     }
   }
 
-  async function deleteList() {
-    if (!active || !confirm(`Xóa list "${active.name}"?`)) return;
+  async function handleDeleteList(targetList: LabelList, e?: React.MouseEvent) {
+    if (e) e.stopPropagation();
+    if (!confirm(`Xóa nhóm tem "${targetList.name}" cùng tất cả tem bên trong?`)) return;
     try {
-      await deleteListDb(active.id);
-      const remaining = lists.filter((l) => l.id !== active.id);
-      setLists(remaining);
-      switchList(remaining[0]?.id ?? null);
-    } catch (e) {
-      setMsg({ kind: "error", text: `Không xóa được list: ${(e as Error).message}` });
+      await deleteListDb(targetList.id);
+      setLists((ls) => ls.filter((l) => l.id !== targetList.id));
+      if (activeId === targetList.id) {
+        backToMaster();
+      }
+    } catch (err) {
+      setMsg({ kind: "error", text: `Không xóa được nhóm tem: ${(err as Error).message}` });
     }
   }
 
@@ -159,65 +202,254 @@ export default function LabelsPage() {
     );
   }
 
-  return (
-    <div className="mx-auto max-w-3xl">
-      <PageHeader title="Tem giá" subtitle="Tìm kiếm sản phẩm, quét mã vạch và xuất file in tem">
-        <button onClick={createList} className="rounded-lg bg-primary px-3.5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors">
-          + List mới
-        </button>
-      </PageHeader>
+  // Lọc danh sách nhóm tem theo tìm kiếm ở màn Master
+  const filteredLists = lists.filter((l) =>
+    l.name.toLowerCase().includes(listSearchQuery.toLowerCase().trim()),
+  );
 
+  return (
+    <div className="mx-auto max-w-4xl">
+      {/* =========================================================================
+          MÀN HÌNH MASTER: DANH SÁCH CÁC NHÓM TEM GIÁ
+         ========================================================================= */}
       {!active ? (
-        <Card className="text-sm">
-          {lists.length ? (
-            <label className="block">
-              Chọn list tem để bắt đầu:
-              <select
-                className="mt-2 block w-full rounded-xl border border-border bg-card p-2.5 text-sm"
-                value=""
-                onChange={(e) => switchList(e.target.value)}
+        <div>
+          <PageHeader
+            title="Nhóm tem giá"
+            subtitle="Quản lý các đợt in tem, nhóm sản phẩm cần in bảng giá"
+          >
+            <button
+              onClick={openCreateListModal}
+              className="flex items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 text-sm font-medium text-primary-foreground shadow-xs hover:bg-primary/90 transition-colors"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="h-4 w-4"
               >
-                <option value="" disabled>
-                  — Chọn danh sách —
-                </option>
-                {lists.map((l) => (
-                  <option key={l.id} value={l.id}>
-                    {l.name} ({l.items.length} sản phẩm)
-                  </option>
-                ))}
-              </select>
-            </label>
-          ) : (
-            "Chưa có list nào. Bấm “+ List mới” ở góc trên để tạo danh sách tem đầu tiên."
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+              <span>Tạo nhóm tem</span>
+            </button>
+          </PageHeader>
+
+          {/* Ô tìm kiếm nhanh nhóm tem */}
+          {lists.length > 3 && (
+            <div className="mb-4">
+              <input
+                type="text"
+                placeholder="Tìm nhóm tem theo tên..."
+                value={listSearchQuery}
+                onChange={(e) => setListSearchQuery(e.target.value)}
+                className="w-full rounded-xl border border-border bg-card px-3.5 py-2 text-sm shadow-xs transition-colors focus:border-primary focus:outline-hidden focus:ring-2 focus:ring-primary/20"
+              />
+            </div>
           )}
-        </Card>
-      ) : (
-        <>
-          {/* Thanh chọn list và thao tác phía trên (đã đưa nút Xuất Excel lên đầu) */}
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-2 text-sm">
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-muted">Đang xem:</span>
-              <select
-                className="rounded-lg border border-border bg-card px-3 py-1.5 font-medium"
-                value={active.id}
-                onChange={(e) => switchList(e.target.value)}
+
+          {msg && (
+            <p
+              className={`mb-4 text-sm font-medium ${msg.kind === "error" ? "text-danger" : "text-primary"
+                }`}
+            >
+              {msg.text}
+            </p>
+          )}
+
+          {lists.length === 0 ? (
+            <Card className="py-12 text-center">
+              <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10 text-primary text-xl">
+                🏷️
+              </div>
+              <h3 className="font-medium text-foreground">Chưa có nhóm tem nào</h3>
+              <p className="mt-1 text-sm text-muted">
+                Bấm nút “Tạo nhóm tem” ở trên để tạo danh sách tem đầu tiên.
+              </p>
+              <button
+                onClick={openCreateListModal}
+                className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
               >
-                {lists.map((l) => (
-                  <option key={l.id} value={l.id}>
-                    {l.name} ({l.items.length})
-                  </option>
-                ))}
-              </select>
-              <button onClick={deleteList} className="text-xs text-danger hover:underline">
-                Xóa list
+                + Tạo nhóm tem ngay
               </button>
+            </Card>
+          ) : filteredLists.length === 0 ? (
+            <Card className="py-8 text-center text-sm text-muted">
+              Không tìm thấy nhóm tem nào khớp với “{listSearchQuery}”.
+            </Card>
+          ) : (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {filteredLists.map((l) => (
+                <div
+                  key={l.id}
+                  onClick={() => enterDetail(l.id)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      enterDetail(l.id);
+                    }
+                  }}
+                  className="group relative flex cursor-pointer flex-col justify-between rounded-xl border border-border bg-card p-4 shadow-xs transition-all hover:border-primary/50 hover:shadow-md"
+                >
+                  <div>
+                    <div className="flex items-start justify-between gap-2">
+                      <h3 className="font-semibold text-foreground group-hover:text-primary transition-colors line-clamp-2">
+                        {l.name}
+                      </h3>
+                      {/* Thao tác nhóm: Sửa tên / Xóa */}
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          onClick={(e) => openRenameListModal(l, e)}
+                          title="Đổi tên nhóm"
+                          className="rounded-lg p-1.5 text-muted hover:bg-background hover:text-foreground transition-colors"
+                        >
+                          <svg
+                            xmlns="http://www.w3.org/2000/svg"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            className="h-3.5 w-3.5"
+                          >
+                            <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+                          </svg>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => handleDeleteList(l, e)}
+                          title="Xóa nhóm tem"
+                          className="rounded-lg p-1.5 text-muted hover:bg-danger/10 hover:text-danger transition-colors"
+                        >
+                          <svg
+                            xmlns="http://www.w3.org/2000/svg"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            className="h-3.5 w-3.5"
+                          >
+                            <path d="M3 6h18" />
+                            <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+                            <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+                          </svg>
+                        </button>
+                      </div>
+                    </div>
+
+                    <p className="mt-2 text-xs text-muted">
+                      {l.items.length === 0 ? "Chưa có sản phẩm" : `${l.items.length} sản phẩm`}
+                      {l.created_at && (
+                        <span>
+                          {" "}
+                          · {new Date(l.created_at).toLocaleDateString("vi-VN")}
+                        </span>
+                      )}
+                    </p>
+                  </div>
+
+                  <div className="mt-4 flex items-center justify-between border-t border-border pt-3 text-xs">
+                    <span className="font-medium text-primary flex items-center gap-1 group-hover:translate-x-0.5 transition-transform">
+                      <span>Mở danh sách</span>
+                      <span>→</span>
+                    </span>
+                    {l.items.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void exportListXlsx(l);
+                        }}
+                        title="Xuất Excel"
+                        className="rounded-md border border-border px-2 py-1 text-muted hover:bg-background hover:text-foreground transition-colors"
+                      >
+                        Xuất Excel
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : (
+        /* =========================================================================
+            MÀN HÌNH DETAIL: CHI TIẾT CÁC LABEL BÊN TRONG 1 NHÓM
+           ========================================================================= */
+        <div>
+          {/* Nút quay lại màn Master và tiêu đề nhóm */}
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={backToMaster}
+                className="flex items-center gap-1 rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground shadow-xs hover:bg-background transition-colors"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="h-3.5 w-3.5"
+                >
+                  <path d="m15 18-6-6 6-6" />
+                </svg>
+                <span>Tất cả nhóm</span>
+              </button>
+
+              <div className="flex items-center gap-2">
+                <h1 className="text-lg font-bold text-foreground sm:text-xl">{active.name}</h1>
+                <button
+                  type="button"
+                  onClick={() => openRenameListModal(active)}
+                  title="Đổi tên nhóm tem này"
+                  className="rounded-md p-1 text-muted hover:bg-card hover:text-foreground transition-colors"
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="h-3.5 w-3.5"
+                  >
+                    <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+                  </svg>
+                </button>
+              </div>
             </div>
 
-            {/* Nút Xuất Excel đưa lên ĐẦU bảng */}
-            <div className="flex items-center gap-2.5">
-              <span className="text-xs text-muted font-medium">
-                {active.items.length} sản phẩm
-              </span>
+            {/* Các thao tác: Chuyển nhóm nhanh, Xóa nhóm, Xuất Excel */}
+            <div className="flex flex-wrap items-center gap-2">
+              {lists.length > 1 && (
+                <select
+                  className="rounded-lg border border-border bg-card px-2.5 py-1.5 text-xs font-medium text-foreground"
+                  value={active.id}
+                  onChange={(e) => enterDetail(e.target.value)}
+                  title="Chuyển nhanh sang nhóm khác"
+                >
+                  {lists.map((l) => (
+                    <option key={l.id} value={l.id}>
+                      {l.name} ({l.items.length})
+                    </option>
+                  ))}
+                </select>
+              )}
+
               <button
                 disabled={!active.items.length}
                 onClick={() => void exportListXlsx(active)}
@@ -238,12 +470,21 @@ export default function LabelsPage() {
                   <polyline points="7 10 12 15 17 10" />
                   <line x1="12" y1="15" x2="12" y2="3" />
                 </svg>
-                <span>Xuất Excel</span>
+                <span>Xuất Excel ({active.items.length})</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleDeleteList(active)}
+                className="rounded-lg border border-danger/30 px-2.5 py-1.5 text-xs text-danger hover:bg-danger/10 transition-colors"
+                title="Xóa nhóm tem hiện tại"
+              >
+                Xóa nhóm
               </button>
             </div>
           </div>
 
-          {/* 1 ô input duy nhất tìm kiếm & append icon quét mã vạch */}
+          {/* Ô tìm kiếm & icon quét mã vạch */}
           <div className="relative mb-3">
             <div className="relative flex items-center">
               <input
@@ -289,7 +530,7 @@ export default function LabelsPage() {
                     setQuery("");
                   }
                 }}
-                placeholder="Tìm kiếm theo tên sản phẩm, mã vạch hoặc mã hàng..."
+                placeholder="Tìm kiếm theo tên sản phẩm, mã vạch hoặc mã hàng để thêm vào list..."
                 className="w-full rounded-xl border border-border bg-card py-2.5 pl-3.5 pr-11 text-sm shadow-xs transition-colors focus:border-primary focus:outline-hidden focus:ring-2 focus:ring-primary/20"
               />
 
@@ -332,9 +573,8 @@ export default function LabelsPage() {
                   <li key={p.code}>
                     <button
                       type="button"
-                      className={`flex w-full justify-between gap-2 px-3.5 py-2.5 text-left transition-colors ${
-                        idx === selectedIndex ? "bg-primary/10 text-primary" : "hover:bg-background"
-                      }`}
+                      className={`flex w-full justify-between gap-2 px-3.5 py-2.5 text-left transition-colors ${idx === selectedIndex ? "bg-primary/10 text-primary" : "hover:bg-background"
+                        }`}
                       onClick={() => {
                         void addProduct(p);
                         setQuery("");
@@ -359,7 +599,10 @@ export default function LabelsPage() {
 
           {/* Thông báo thao tác thêm/xóa */}
           {msg && (
-            <p className={`mb-3 text-sm font-medium ${msg.kind === "error" ? "text-danger" : "text-primary"}`}>
+            <p
+              className={`mb-3 text-sm font-medium ${msg.kind === "error" ? "text-danger" : "text-primary"
+                }`}
+            >
               {msg.text}
             </p>
           )}
@@ -403,17 +646,20 @@ export default function LabelsPage() {
               <thead className="border-b border-border text-left text-xs font-semibold text-muted">
                 <tr>
                   <th className="p-3 w-10 text-center" aria-label="Xóa"></th>
-                  <th className="p-3 min-w-[100px]">Tên hàng hóa</th>
-                  <th className="p-3">Mã hàng</th>
-                  <th className="p-3">Mã vạch</th>
-                  <th className="p-3 text-right">Giá bán</th>
-                  <th className="p-3">ĐVT</th>
+                  <th className="p-3 max-w-[240px] md:max-w-[320px]">Tên hàng hóa</th>
+                  <th className="p-3 whitespace-nowrap">Mã hàng</th>
+                  <th className="p-3 whitespace-nowrap">Mã vạch</th>
+                  <th className="p-3 text-right whitespace-nowrap min-w-[100px]">Giá bán</th>
+                  <th className="p-3 whitespace-nowrap">ĐVT</th>
                 </tr>
               </thead>
               <tbody>
                 {active.items.map((i) => (
-                  <tr key={i.code} className="border-b border-border last:border-0 hover:bg-background/50 transition-colors">
-                    {/* Cột 1: Nút xóa icon thùng rác */}
+                  <tr
+                    key={i.code}
+                    className="border-b border-border last:border-0 hover:bg-background/50 transition-colors"
+                  >
+                    {/* Nút xóa icon thùng rác */}
                     <td className="p-3 text-center w-10">
                       <button
                         type="button"
@@ -440,24 +686,75 @@ export default function LabelsPage() {
                         </svg>
                       </button>
                     </td>
-                    <td className="p-3 font-medium min-w-[100px]">{i.name}</td>
-                    <td className="p-3 tabular-nums text-muted">{i.code}</td>
-                    <td className="p-3 tabular-nums text-muted">{i.barcode || "–"}</td>
-                    <td className="p-3 text-right font-medium tabular-nums">{formatNumber(i.price)} đ</td>
-                    <td className="p-3 text-muted">{i.unit}</td>
+                    <td className="p-3 font-medium max-w-[240px] md:max-w-[320px] truncate" title={i.name}>
+                      {i.name}
+                    </td>
+                    <td className="p-3 tabular-nums text-muted whitespace-nowrap">{i.code}</td>
+                    <td className="p-3 tabular-nums text-muted whitespace-nowrap">{i.barcode || "–"}</td>
+                    <td className="p-3 text-right font-medium tabular-nums whitespace-nowrap">
+                      {formatNumber(i.price)} đ
+                    </td>
+                    <td className="p-3 text-muted whitespace-nowrap">{i.unit}</td>
                   </tr>
                 ))}
                 {!active.items.length && (
                   <tr>
                     <td colSpan={6} className="p-8 text-center text-muted">
-                      List tem đang trống. Tìm kiếm hoặc bấm icon quét mã vạch ở ô trên để thêm sản phẩm.
+                      Nhóm tem này đang trống. Nhập tên sản phẩm hoặc bấm icon quét mã vạch ở ô trên để thêm.
                     </td>
                   </tr>
                 )}
               </tbody>
             </table>
           </Card>
-        </>
+        </div>
+      )}
+
+      {/* =========================================================================
+          MODAL THÊM / SỬA TÊN NHÓM TEM
+         ========================================================================= */}
+      {listModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs animate-in fade-in duration-150">
+          <div className="relative w-full max-w-md overflow-hidden rounded-2xl border border-border bg-card p-6 shadow-2xl">
+            <h3 className="text-lg font-bold">
+              {listModalMode === "create" ? "Tạo nhóm tem giá mới" : "Đổi tên nhóm tem"}
+            </h3>
+            <p className="mt-1 text-xs text-muted">
+              {listModalMode === "create"
+                ? "Đặt tên gợi nhớ cho đợt in hoặc nhóm tem (ví dụ: Tem bánh kẹo Tết, Đợt in 09/11)"
+                : "Nhập tên mới cho nhóm tem này"}
+            </p>
+
+            <form onSubmit={handleSaveListModal} className="mt-4">
+              <input
+                type="text"
+                autoFocus
+                required
+                value={listNameInput}
+                onChange={(e) => setListNameInput(e.target.value)}
+                placeholder="Nhập tên nhóm tem..."
+                className="w-full rounded-xl border border-border bg-background px-3.5 py-2.5 text-sm shadow-xs transition-colors focus:border-primary focus:outline-hidden focus:ring-2 focus:ring-primary/20"
+              />
+
+              <div className="mt-5 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setListModalOpen(false)}
+                  className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-muted hover:bg-background hover:text-foreground transition-colors"
+                >
+                  Hủy
+                </button>
+                <button
+                  type="submit"
+                  disabled={!listNameInput.trim()}
+                  className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-xs hover:bg-primary/90 disabled:opacity-50 transition-colors"
+                >
+                  {listModalMode === "create" ? "Tạo nhóm" : "Lưu thay đổi"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
     </div>
   );

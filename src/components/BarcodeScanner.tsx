@@ -3,22 +3,51 @@
 import { useEffect, useRef, useState } from "react";
 import { BarcodeFormat, DecodeHintType } from "@zxing/library";
 
-function beep() {
+// Âm thanh và rung báo hiệu quét thành công
+export function notifyScanSuccess() {
+  // 1. Rung điện thoại (vibrate pattern: rung 80ms)
   try {
-    const Ctx =
+    if (typeof navigator !== "undefined" && "vibrate" in navigator) {
+      navigator.vibrate([80, 40, 80]);
+    }
+  } catch {}
+
+  // 2. Phát âm thanh "bíp" hai tông tần số cao rõ nét kiểu máy pos quét mã
+  try {
+    const AudioCtx =
       window.AudioContext ||
       (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-    const ctx = new Ctx();
+    if (!AudioCtx) return;
+
+    const ctx = new AudioCtx();
+    // Resume context nếu đang suspended trên trình duyệt mobile
+    if (ctx.state === "suspended") {
+      void ctx.resume();
+    }
+
+    const now = ctx.currentTime;
     const osc = ctx.createOscillator();
-    osc.frequency.value = 1000;
-    osc.connect(ctx.destination);
-    osc.start();
+    const gain = ctx.createGain();
+
+    osc.type = "sine";
+    // Tần số chuyển từ 1800Hz lên 2400Hz tạo tiếng bíp điện tử rất rõ và dễ nghe
+    osc.frequency.setValueAtTime(1800, now);
+    osc.frequency.exponentialRampToValueAtTime(2400, now + 0.08);
+
+    // Fade out âm lượng để không bị tiếng "tách"
+    gain.gain.setValueAtTime(0.3, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+
+    osc.start(now);
+    osc.stop(now + 0.12);
+
     setTimeout(() => {
-      osc.stop();
       void ctx.close();
-    }, 90);
+    }, 200);
   } catch {}
-  navigator.vibrate?.(60);
 }
 
 interface Props {
@@ -56,7 +85,7 @@ export default function BarcodeScanner({ onDetect, onClose, scanError }: Props) 
       const now = Date.now();
       if (text === last.text && now - last.at < 2000) return;
       last = { text, at: now };
-      beep();
+      notifyScanSuccess();
       onDetectRef.current(text);
     };
 
@@ -184,7 +213,7 @@ export default function BarcodeScanner({ onDetect, onClose, scanError }: Props) 
           const bitmap = await createImageBitmap(file);
           const barcodes = await detector.detect(bitmap);
           if (barcodes.length > 0 && barcodes[0].rawValue) {
-            beep();
+            notifyScanSuccess();
             onDetectRef.current(barcodes[0].rawValue);
             setDecodingPhoto(false);
             return;
@@ -201,7 +230,7 @@ export default function BarcodeScanner({ onDetect, onClose, scanError }: Props) 
       try {
         const result = await reader.decodeFromImageUrl(objectUrl);
         if (result) {
-          beep();
+          notifyScanSuccess();
           onDetectRef.current(result.getText());
         }
       } finally {
